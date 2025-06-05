@@ -4,19 +4,11 @@ from typing import List, Dict
 from models.instance_data import InstanceData
 from models.solution import Solution
 from models.library import Library
-from models.solver_guided import Solver_Guided
+from models.new_solver import NewSolver  # <-- Use your new solver
 
 class ACO_Solver:
     def __init__(self, num_ants: int = 10, evaporation_rate: float = 0.1, 
                  alpha: float = 1.0, beta: float = 2.0, max_iterations: int = 100):
-        """
-        Initialize the ACO solver with parameters:
-        - num_ants: Number of ants in the colony
-        - evaporation_rate: Rate at which pheromone evaporates
-        - alpha: Importance of pheromone trail
-        - beta: Importance of heuristic information
-        - max_iterations: Maximum number of iterations
-        """
         self.num_ants = num_ants
         self.evaporation_rate = evaporation_rate
         self.alpha = alpha
@@ -25,33 +17,29 @@ class ACO_Solver:
         self.pheromone = {}
         self.best_solution = None
         self.best_score = -1
-        self.guided_solver = Solver_Guided()
+        self.new_solver = NewSolver()  # <-- Use your new solver
 
     def initialize_pheromones(self, data: InstanceData):
-        """Initialize pheromone trails for all libraries"""
         initial_pheromone = 1.0
         for lib in data.libs:
             self.pheromone[lib.id] = initial_pheromone
 
     def get_tweak_methods(self) -> list:
-        """Return all available tweak methods from Solver_Guided"""
+        """Return all available tweak methods from NewSolver"""
         return [
-            self.guided_solver.tweak_solution_swap_signed,
-            self.guided_solver.tweak_solution_swap_signed_with_unsigned,
-            self.guided_solver.tweak_solution_swap_same_books,
-            self.guided_solver.tweak_solution_insert_library,
-            self.guided_solver.tweak_solution_swap_last_book,
-            self.guided_solver.tweak_solution_swap_neighbor_libraries,
-            self.guided_solver.tweak_solution_shuffle_books,
-            self.guided_solver.tweak_solution_swap_signed_guided
+            self.new_solver.tweak_solution_swap_signed,
+            self.new_solver.tweak_solution_swap_signed_with_unsigned,
+            self.new_solver.tweak_solution_swap_same_books,
+            self.new_solver.tweak_solution_swap_last_book,
+            # Add more if you implement them in NewSolver
         ]
 
     def select_random_tweak(self):
-        """Randomly select one of the available tweak methods"""
         tweak_methods = self.get_tweak_methods()
         selected_method = random.choice(tweak_methods)
         self.last_tweak_method_name = selected_method.__name__ 
         return selected_method
+
 
 
     def heuristic_information(self, lib_id: int, data: InstanceData) -> float:
