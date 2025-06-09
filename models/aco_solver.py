@@ -1,9 +1,8 @@
 import random
 import copy
-from typing import List, Dict
+from typing import List, Dict, Set
 from models.instance_data import InstanceData
 from models.solution import Solution
-from models.library import Library
 from models.new_solver import NewSolver
 
 class ACO_Solver:
@@ -17,16 +16,9 @@ class ACO_Solver:
         self.pheromone = {}
         self.best_solution = None
         self.best_score = -1
-        self.new_solver = NewSolver() 
-
-    def initialize_pheromones(self, data: InstanceData):
-        initial_pheromone = 1.0
-        for lib in data.libs:
-            self.pheromone[lib.id] = initial_pheromone
-
-    def get_tweak_methods(self) -> list:
-        """Return all available tweak methods from NewSolver"""
-        return [
+        self.new_solver = NewSolver()
+        self.last_tweak_method_name = "None"
+        self._tweak_methods = [
             self.new_solver.tweak_solution_swap_signed,
             self.new_solver.tweak_solution_swap_signed_with_unsigned,
             self.new_solver.tweak_solution_swap_same_books,
@@ -34,22 +26,49 @@ class ACO_Solver:
             self.new_solver.tweak_solution_swap_neighbor_libraries,
             self.new_solver.tweak_solution_insert_library
         ]
+        self._swap_methods = [
+            self.new_solver.tweak_solution_swap_signed,
+            self.new_solver.tweak_solution_swap_neighbor_libraries
+        ]
+        self._book_tweak_methods = [
+            self.new_solver.tweak_solution_swap_last_book,
+            self.new_solver.tweak_solution_swap_same_books
+        ]
 
-    def select_random_tweak(self):
-        tweak_methods = self.get_tweak_methods()
-        selected_method = random.choice(tweak_methods)
-        self.last_tweak_method_name = selected_method.__name__ 
-        return selected_method
+    def initialize_pheromones(self, data: InstanceData):
+        """Initialize pheromone trails with default value"""
+        self.pheromone = {lib.id: 1.0 for lib in data.libs}
 
-
+    def select_guided_tweak(self, solution: Solution, data: InstanceData):
+        """Select an appropriate tweak method based on solution state"""
+        if solution.unsigned_libraries:
+            self.last_tweak_method_name = "insert_library"
+            return self.new_solver.tweak_solution_insert_library
+        
+        if len(solution.signed_libraries) >= 2:
+            method = random.choice(self._swap_methods)
+            self.last_tweak_method_name = method.__name__.split('.')[-1]
+            return method
+        
+        method = random.choice(self._book_tweak_methods)
+        self.last_tweak_method_name = method.__name__.split('.')[-1]
+        return method
 
     def heuristic_information(self, lib_id: int, data: InstanceData) -> float:
         """Calculate heuristic information for a library (score per signup day)"""
-        lib = data.libs[lib_id]
+        try:
+            lib = next(lib for lib in data.libs if lib.id == lib_id)
+        except StopIteration:
+            return 0.0
+        
+        if lib.signup_days == 0:
+            return 0.0
+        
+        # Calculate total score of books in the library
         total_score = sum(data.scores[book.id] for book in lib.books)
-        return total_score / lib.signup_days if lib.signup_days > 0 else 0
+        return total_score / lib.signup_days
 
-    def calculate_probability(self, lib_id: int, data: InstanceData, visited: set) -> float:
+    def calculate_probability(self, lib_id: int, data: InstanceData, visited: Set[int]) -> float:
         """Calculate selection probability for a library"""
         if lib_id in visited:
             return 0.0
@@ -60,49 +79,54 @@ class ACO_Solver:
 
     def construct_solution(self, data: InstanceData) -> Solution:
         """Construct a solution using pheromone trails and heuristic information"""
-        Library._id_counter = 0
         solution = Solution([], [], {}, set())
         curr_time = 0
         visited = set()
+        unvisited_libs = [lib.id for lib in data.libs]
 
-        while curr_time < data.num_days and len(visited) < len(data.libs):
-            # Calculate probabilities for all unvisited libraries
+        while curr_time < data.num_days and unvisited_libs:
+            # Calculate probabilities for unvisited libraries
             probabilities = []
             valid_libs = []
             
-            for lib in data.libs:
-                if lib.id not in visited:
-                    prob = self.calculate_probability(lib.id, data, visited)
+            for lib_id in unvisited_libs:
+                prob = self.calculate_probability(lib_id, data, visited)
+                if prob > 0:
                     probabilities.append(prob)
-                    valid_libs.append(lib.id)
+                    valid_libs.append(lib_id)
             
             if not valid_libs:
                 break
                 
-            # Normalize probabilities
-            total = sum(probabilities)
-            if total == 0:
-                # If all probabilities are zero, select randomly
+            # Select library based on probability
+            if sum(probabilities) == 0:
                 selected_id = random.choice(valid_libs)
             else:
-                # Select library based on probability
-                probabilities = [p/total for p in probabilities]
                 selected_id = random.choices(valid_libs, weights=probabilities, k=1)[0]
             
             visited.add(selected_id)
-            library = data.libs[selected_id]
+            unvisited_libs.remove(selected_id)
+            
+            try:
+                library = next(lib for lib in data.libs if lib.id == selected_id)
+            except StopIteration:
+                solution.unsigned_libraries.append(selected_id)
+                continue
             
             if curr_time + library.signup_days >= data.num_days:
                 solution.unsigned_libraries.append(selected_id)
                 continue
                 
+            # Calculate available books
             time_left = data.num_days - (curr_time + library.signup_days)
-            max_books_scanned = time_left * library.books_per_day
+            max_books = time_left * library.books_per_day
+            available_books = []
             
-            available_books = sorted(
-                {book.id for book in library.books} - solution.scanned_books,
-                key=lambda b: -data.scores[b]
-            )[:max_books_scanned]
+            for book in library.books:
+                if book.id not in solution.scanned_books:
+                    available_books.append(book.id)
+                    if len(available_books) >= max_books:
+                        break
             
             if available_books:
                 solution.signed_libraries.append(selected_id)
@@ -117,43 +141,47 @@ class ACO_Solver:
 
     def update_pheromones(self, solutions: List[Solution], data: InstanceData):
         """Update pheromone trails based on ant solutions"""
+        total_score = sum(data.scores)
+        if total_score == 0:
+            return
+            
         # Evaporate pheromones
-        for lib_id in self.pheromone:
+        for lib_id in list(self.pheromone.keys()):  # Create a copy of keys to avoid modification during iteration
             self.pheromone[lib_id] *= (1 - self.evaporation_rate)
         
-        # Add new pheromones based on solutions
+        # Add pheromones from solutions
         for solution in solutions:
-            delta = solution.fitness_score / sum(data.scores)  # Normalized delta
+            delta = solution.fitness_score / total_score
             for lib_id in solution.signed_libraries:
-                self.pheromone[lib_id] += delta
+                if lib_id in self.pheromone:
+                    self.pheromone[lib_id] += delta
+                else:
+                    self.pheromone[lib_id] = delta  # Initialize if not present
 
     def run(self, data: InstanceData) -> Solution:
-        """Run the ACO algorithm"""
+        """Run the ACO algorithm to find the best solution"""
         self.initialize_pheromones(data)
         
         for iteration in range(self.max_iterations):
             solutions = []
             
-            # Let each ant construct a solution
             for _ in range(self.num_ants):
+                # Construct and tweak solution
                 solution = self.construct_solution(data)
+                tweak_method = self.select_guided_tweak(solution, data)
+                tweaked_solution = tweak_method(solution, data)
                 
-                # Apply a random tweak to the solution
-                tweak_method = self.select_random_tweak()
-                tweaked_solution = tweak_method(copy.deepcopy(solution), data)
-                
-                # Only keep the tweaked solution if it's valid and better
-                if tweaked_solution is not None and tweaked_solution.fitness_score > solution.fitness_score:
+                # Keep the better solution
+                if tweaked_solution.fitness_score > solution.fitness_score:
                     solution = tweaked_solution
                 
                 solutions.append(solution)
                 
-                # Update best solution found
+                # Update best solution found so far
                 if solution.fitness_score > self.best_score:
                     self.best_score = solution.fitness_score
                     self.best_solution = copy.deepcopy(solution)
             
-            # Update pheromones based on all solutions
             self.update_pheromones(solutions, data)
         
         return self.best_solution
