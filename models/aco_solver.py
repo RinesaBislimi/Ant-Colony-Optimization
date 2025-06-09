@@ -4,7 +4,7 @@ from typing import List, Dict
 from models.instance_data import InstanceData
 from models.solution import Solution
 from models.library import Library
-from models.new_solver import NewSolver  # <-- Use your new solver
+from models.new_solver import NewSolver
 
 class ACO_Solver:
     def __init__(self, num_ants: int = 10, evaporation_rate: float = 0.1, 
@@ -17,7 +17,7 @@ class ACO_Solver:
         self.pheromone = {}
         self.best_solution = None
         self.best_score = -1
-        self.new_solver = NewSolver()  # <-- Use your new solver
+        self.new_solver = NewSolver() 
 
     def initialize_pheromones(self, data: InstanceData):
         initial_pheromone = 1.0
@@ -31,7 +31,8 @@ class ACO_Solver:
             self.new_solver.tweak_solution_swap_signed_with_unsigned,
             self.new_solver.tweak_solution_swap_same_books,
             self.new_solver.tweak_solution_swap_last_book,
-            # Add more if you implement them in NewSolver
+            self.new_solver.tweak_solution_swap_neighbor_libraries,
+            self.new_solver.tweak_solution_insert_library
         ]
 
     def select_random_tweak(self):

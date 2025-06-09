@@ -4,7 +4,7 @@ from models.solution import Solution
 from models.book import Book
 from models.library import Library
 from models.instance_data import InstanceData   
-
+from typing import List, Dict, Set
 class NewSolver:
     def __init__(self):
         pass
@@ -245,6 +245,147 @@ class NewSolver:
             unsigned_libraries,
             new_scanned_books_per_library,
             scanned_books
+        )
+        new_solution.calculate_fitness_score(data.scores)
+        return new_solution
+    
+    def tweak_solution_swap_neighbor_libraries(self, solution: Solution, data: InstanceData) -> Solution:
+        """Swap two adjacent libraries in the signed list with proper recalculation"""
+        if len(solution.signed_libraries) < 2:
+            return solution
+
+        swap_pos = random.randint(0, len(solution.signed_libraries) - 2)
+        new_signed = solution.signed_libraries.copy()
+        new_signed[swap_pos], new_signed[swap_pos + 1] = new_signed[swap_pos + 1], new_signed[swap_pos]
+        
+        curr_time = 0
+        scanned_books: Set[int] = set()
+        new_scanned_books_per_library: Dict[int, List[int]] = {}
+        signed_libraries: List[int] = []
+        unsigned_libraries: List[int] = solution.unsigned_libraries.copy()
+        
+        for i, lib_id in enumerate(new_signed):
+            if lib_id >= len(data.libs):
+                unsigned_libraries.append(lib_id)
+                continue
+                
+            library = data.libs[lib_id]
+            if curr_time + library.signup_days >= data.num_days:
+                unsigned_libraries.append(lib_id)
+                continue
+                
+            time_left = data.num_days - (curr_time + library.signup_days)
+            max_books_scanned = time_left * library.books_per_day
+            
+            # Optimized book selection
+            available_books = sorted(
+                (book.id for book in library.books if book.id not in scanned_books),
+                key=lambda b: -data.scores[b]
+            )[:max_books_scanned]
+            
+            if available_books:
+                signed_libraries.append(lib_id)
+                new_scanned_books_per_library[lib_id] = available_books
+                scanned_books.update(available_books)
+                curr_time += library.signup_days
+            else:
+                unsigned_libraries.append(lib_id)
+        
+        new_solution = Solution(
+            signed_libraries,
+            unsigned_libraries,
+            new_scanned_books_per_library,
+            scanned_books
+        )
+        new_solution.calculate_fitness_score(data.scores)
+        return new_solution
+
+
+    def tweak_solution_insert_library(self, solution: Solution, data: InstanceData) -> Solution:
+        if not solution.unsigned_libraries:
+            return solution
+            
+        # Select best library to insert based on potential score gain
+        candidate_libs = []
+        curr_total_time = sum(data.libs[lib_id].signup_days for lib_id in solution.signed_libraries)
+        
+        for lib_id in solution.unsigned_libraries:
+            lib = data.libs[lib_id]
+            if curr_total_time + lib.signup_days >= data.num_days:
+                continue
+                
+            # Calculate potential new books
+            potential_books = sorted(
+                (book.id for book in lib.books if book.id not in solution.scanned_books),
+                key=lambda b: -data.scores[b.id]
+            )
+            if not potential_books:
+                continue
+                
+            candidate_libs.append((lib_id, sum(data.scores[b] for b in potential_books)))
+        
+        if not candidate_libs:
+            return solution
+            
+        # Select top 3 candidates and choose randomly
+        candidate_libs.sort(key=lambda x: -x[1])
+        lib_to_insert = random.choice(candidate_libs[:min(3, len(candidate_libs))])[0]
+        insert_lib = data.libs[lib_to_insert]
+        
+        # Find available books
+        available_books = sorted(
+            (book.id for book in insert_lib.books if book.id not in solution.scanned_books),
+            key=lambda b: -data.scores[b]
+        )
+        if not available_books:
+            return solution
+            
+        # Test insertion positions
+        best_pos = 0
+        best_score = -1
+        test_positions = sorted({
+            0,
+            len(solution.signed_libraries),
+            random.randint(0, len(solution.signed_libraries))
+        })
+        
+        for pos in test_positions:
+            # Create test solution
+            test_signed = solution.signed_libraries[:pos] + [lib_to_insert] + solution.signed_libraries[pos:]
+            
+            # Simulate time and books
+            temp_time = sum(data.libs[lib_id].signup_days for lib_id in test_signed[:pos]) + insert_lib.signup_days
+            if temp_time >= data.num_days:
+                continue
+                
+            # Calculate approximate score
+            time_left = data.num_days - temp_time
+            max_books = time_left * insert_lib.books_per_day
+            added_score = sum(data.scores[b] for b in available_books[:max_books])
+            
+            if added_score > best_score:
+                best_score = added_score
+                best_pos = pos
+        
+        if best_score <= 0:
+            return solution
+            
+        # Apply the insertion
+        new_signed = solution.signed_libraries[:best_pos] + [lib_to_insert] + solution.signed_libraries[best_pos:]
+        new_unsigned = [lib for lib in solution.unsigned_libraries if lib != lib_to_insert]
+        
+        # Get the actual books that can be scanned
+        max_books = (data.num_days - sum(data.libs[lib_id].signup_days for lib_id in new_signed[:best_pos+1])) * insert_lib.books_per_day
+        final_books = available_books[:max_books]
+        
+        new_scanned = {**solution.scanned_books_per_library, lib_to_insert: final_books}
+        new_books = solution.scanned_books.union(final_books)
+        
+        new_solution = Solution(
+            new_signed,
+            new_unsigned,
+            new_scanned,
+            new_books
         )
         new_solution.calculate_fitness_score(data.scores)
         return new_solution
