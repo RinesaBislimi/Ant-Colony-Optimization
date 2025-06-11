@@ -1,131 +1,160 @@
 import random
 from models.solution import Solution
 from models.instance_data import InstanceData   
+import heapq
+import time
 
 class NewSolver:
     def __init__(self):
         pass
 
+    def get_available_books(self, library, scanned_books, scores, max_books):
+        available = [(scores[book.id], book.id) for book in library.books if book.id not in scanned_books]
+        top_books = heapq.nlargest(max_books, available)  
+        return [book_id for _, book_id in top_books]
+
+    def evaluate_library(self, lib, scanned_books, scores, days_left):
+        max_books = (days_left - lib.signup_days) * lib.books_per_day
+        if max_books <= 0:
+            return 0
+        available_scores = [scores[book.id] for book in lib.books if book.id not in scanned_books]
+        top_scores = heapq.nlargest(max_books, available_scores)
+        return sum(top_scores) / lib.signup_days
+
     def tweak_solution_swap_signed(self, solution, data):
+        start = time.time()
+
         if len(solution.signed_libraries) < 2:
             return solution
 
-        lib_dict = {lib.id: lib for lib in data.libs}  # <-- Add this
-
-        idx1, idx2 = random.sample(range(len(solution.signed_libraries)), 2)
-        new_signed_libraries = solution.signed_libraries.copy()
-        new_signed_libraries[idx1], new_signed_libraries[idx2] = new_signed_libraries[idx2], new_signed_libraries[idx1]
-
-        curr_time = 0
+        lib_dict = {lib.id: lib for lib in data.libs}
         scanned_books = set(solution.scanned_books)
-        new_scanned_books_per_library = {}
-        signed_libraries = []
 
-        for lib_id in new_signed_libraries:
+        # Evaluate potential of signed libraries
+        potentials = []
+        curr_time = 0
+        for lib_id in solution.signed_libraries:
             if lib_id not in lib_dict:
-                continue  # skip invalid IDs
-            library = lib_dict[lib_id]
-            if curr_time + library.signup_days >= data.num_days:
-                break
-            time_left = data.num_days - (curr_time + library.signup_days)
-            max_books_scanned = time_left * library.books_per_day
-            
-            # Pre-filter books that aren't already scanned
-            available_books = []
-            for book in library.books:
-                if book.id not in scanned_books:
-                    available_books.append(book.id)
-                    if len(available_books) == max_books_scanned:
-                        break
-            
-            if available_books:
-                signed_libraries.append(lib_id)
-                new_scanned_books_per_library[lib_id] = available_books
-                scanned_books.update(available_books)
-                curr_time += library.signup_days
-            else:
-                break
+                continue
+            lib = lib_dict[lib_id]
+            days_left = data.num_days - curr_time - lib.signup_days
+            potential = self.evaluate_library(lib, scanned_books, data.scores, days_left)
+            potentials.append((lib_id, potential))
+            curr_time += lib.signup_days
 
-        # Only include libraries we actually processed
-        new_unsigned_libraries = [lib.id for lib in data.libs if lib.id not in signed_libraries]
+        if len(potentials) < 2:
+            return solution
 
+        # Find lowest and highest potential libraries
+        potentials.sort(key=lambda x: x[1])
+        low_id = potentials[0][0]
+        high_id = potentials[-1][0]
+
+        if low_id == high_id:
+            return solution
+
+        # Swap them in signed_libraries
+        idx_low = solution.signed_libraries.index(low_id)
+        idx_high = solution.signed_libraries.index(high_id)
+        new_order = solution.signed_libraries.copy()
+        new_order[idx_low], new_order[idx_high] = new_order[idx_high], new_order[idx_low]
+        
+        print(f"[tweak_solution_swap_signed] Time: {time.time() - start:.4f}s")
+
+        return self.build_solution_from_order(new_order, data)
+
+    def build_solution_from_order(self, signed_order, data, unsigned_libraries=None):
+        lib_dict = {lib.id: lib for lib in data.libs}
+        scanned_books = set()
+        new_scanned_books_per_library = {}
+        new_signed = []
+        curr_time = 0
+
+        for lib_id in signed_order:
+            if lib_id not in lib_dict:
+                continue
+            lib = lib_dict[lib_id]
+            if curr_time + lib.signup_days >= data.num_days:
+                continue
+            time_left = data.num_days - (curr_time + lib.signup_days)
+            max_books = time_left * lib.books_per_day
+            books = self.get_available_books(lib, scanned_books, data.scores, max_books)
+            if books:
+                new_signed.append(lib_id)
+                new_scanned_books_per_library[lib_id] = books
+                scanned_books.update(books)
+                curr_time += lib.signup_days
+
+        if unsigned_libraries is None:
+            unsigned_libraries = [lib.id for lib in data.libs if lib.id not in new_signed]
+        else:
+            unsigned_libraries = [lid for lid in unsigned_libraries if lid not in new_signed]
+
+        
         new_solution = Solution(
-            signed_libraries,
-            new_unsigned_libraries,
+            new_signed,
+            unsigned_libraries,
             new_scanned_books_per_library,
             scanned_books
         )
         new_solution.calculate_fitness_score(data.scores)
+        
         return new_solution
 
-    def tweak_solution_swap_signed_with_unsigned(self, solution, data, bias_type=None, bias_ratio=2/3):
+    def tweak_solution_swap_signed_with_unsigned(self, solution, data):
+        start = time.time()
         if not solution.signed_libraries or not solution.unsigned_libraries:
             return solution
 
-        lib_dict = {lib.id: lib for lib in data.libs}  # <-- Add here
+        lib_dict = {lib.id: lib for lib in data.libs}
+        scanned_books = set(solution.scanned_books)
 
-        total_signed = len(solution.signed_libraries)
-        
-        # Optimized bias selection
-        if bias_type == "favor_first_half" and total_signed > 1:
-            signed_idx = random.randint(0, total_signed // 2 - 1) if random.random() < bias_ratio else random.randint(0, total_signed - 1)
-        elif bias_type == "favor_second_half" and total_signed > 1:
-            signed_idx = random.randint(total_signed // 2, total_signed - 1) if random.random() < bias_ratio else random.randint(0, total_signed - 1)
-        else:
-            signed_idx = random.randint(0, total_signed - 1)
-
-        unsigned_idx = random.randint(0, len(solution.unsigned_libraries) - 1)
-        signed_lib_id = solution.signed_libraries[signed_idx]
-        unsigned_lib_id = solution.unsigned_libraries[unsigned_idx]
-
-        # Create new lists with the swap
-        new_signed = solution.signed_libraries[:signed_idx] + [unsigned_lib_id] + solution.signed_libraries[signed_idx+1:]
-        new_unsigned = solution.unsigned_libraries[:unsigned_idx] + [signed_lib_id] + solution.unsigned_libraries[unsigned_idx+1:]
-
+        # Evaluate signed libraries
         curr_time = 0
-        scanned_books = set()
-        new_scanned_books_per_library = {}
-        final_signed = []
-        final_unsigned = new_unsigned.copy()
-
-        for lib_id in new_signed:
+        signed_scores = []
+        for lib_id in solution.signed_libraries:
             if lib_id not in lib_dict:
-                final_unsigned.append(lib_id)
                 continue
-            library = lib_dict[lib_id]
-            if curr_time + library.signup_days >= data.num_days:
-                final_unsigned.append(lib_id)
-                continue
-                
-            time_left = data.num_days - (curr_time + library.signup_days)
-            max_books_scanned = time_left * library.books_per_day
-            
-            # Pre-allocate list for better performance
-            available_books = []
-            for book in library.books:
-                if book.id not in scanned_books:
-                    available_books.append(book.id)
-                    if len(available_books) == max_books_scanned:
-                        break
-            
-            if available_books:
-                final_signed.append(lib_id)
-                new_scanned_books_per_library[lib_id] = available_books
-                scanned_books.update(available_books)
-                curr_time += library.signup_days
-            else:
-                final_unsigned.append(lib_id)
+            lib = lib_dict[lib_id]
+            days_left = data.num_days - curr_time - lib.signup_days
+            score = self.evaluate_library(lib, scanned_books, data.scores, days_left)
+            signed_scores.append((lib_id, score))
+            curr_time += lib.signup_days
 
-        new_solution = Solution(
-            final_signed,
-            final_unsigned,
-            new_scanned_books_per_library,
-            scanned_books
-        )
-        new_solution.calculate_fitness_score(data.scores)
-        return new_solution
+        if not signed_scores:
+            return solution
+
+        # Worst signed library
+        signed_scores.sort(key=lambda x: x[1])
+        worst_signed_id = signed_scores[0][0]
+
+        # Evaluate unsigned libraries
+        unsigned_scores = []
+        for lib_id in solution.unsigned_libraries:
+            if lib_id not in lib_dict:
+                continue
+            lib = lib_dict[lib_id]
+            days_left = data.num_days  # Estimate as if inserted early
+            score = self.evaluate_library(lib, scanned_books, data.scores, days_left)
+            unsigned_scores.append((lib_id, score))
+
+        if not unsigned_scores:
+            return solution
+
+        # Best unsigned library
+        unsigned_scores.sort(key=lambda x: -x[1])
+        best_unsigned_id = unsigned_scores[0][0]
+
+        # Swap
+        new_signed = [best_unsigned_id if lid == worst_signed_id else lid for lid in solution.signed_libraries]
+        new_unsigned = [lid for lid in solution.unsigned_libraries if lid != best_unsigned_id] + [worst_signed_id]
+
+        print(f"[tweak_solution_swap_signed_with_unsigned] Time: {time.time() - start:.4f}s")
+        return self.build_solution_from_order(new_signed, data, new_unsigned)
+
 
     def tweak_solution_swap_same_books(self, solution, data):
+        start = time.time()
         if not solution.signed_libraries or not solution.unsigned_libraries:
             return solution
 
@@ -181,10 +210,12 @@ class NewSolver:
             scanned_books_per_library,
             scanned_books
         )
+        print(f"[tweak_solution_swap_same_books] Time: {time.time() - start:.4f}s")
         new_solution.calculate_fitness_score(data.scores)
         return new_solution
 
     def tweak_solution_swap_last_book(self, solution, data):
+        start = time.time()
         if not solution.scanned_books_per_library or not solution.unsigned_libraries:
             return solution
 
@@ -236,6 +267,8 @@ class NewSolver:
             new_scanned_books_per_library,
             new_scanned_books
         )
+        
+        print(f"[tweak_solution_swap_last_book] Time: {time.time() - start:.4f}s")
         new_solution.calculate_fitness_score(data.scores)
         return new_solution
     
@@ -287,8 +320,24 @@ class NewSolver:
         )
         new_solution.calculate_fitness_score(data.scores)
         return new_solution
+    
+    def optimize_remaining_time(self, solution, data):
+        # After initial solution, fill remaining time with small libraries
+        used_time = sum(data.libs[lib_id].signup_days for lib_id in solution.signed_libraries)
+        remaining_time = data.num_days - used_time
+        
+        # Try to find libraries that can fit in remaining time
+        for lib in data.libs:
+            if lib.id not in solution.signed_libraries and lib.signup_days <= remaining_time:
+                # Evaluate adding this library at the end
+                new_order = solution.signed_libraries + [lib.id]
+                new_sol = self.build_solution_from_order(new_order, data)
+                if new_sol.fitness > solution.fitness:
+                    return new_sol
+        return solution
         
     def tweak_solution_swap_neighbor_libraries(self, solution: Solution, data: InstanceData) -> Solution:
+        start = time.time()
         if len(solution.signed_libraries) < 2:
             return solution
 
@@ -342,10 +391,13 @@ class NewSolver:
             new_scanned_books_per_library,
             scanned_books
         )
+        
+        print(f"[tweak_solution_swap_neighbor_libraries] Time: {time.time() - start:.4f}s")
         new_solution.calculate_fitness_score(data.scores)
         return new_solution
 
     def tweak_solution_insert_library(self, solution: Solution, data: InstanceData) -> Solution:
+        start = time.time()
         if not solution.unsigned_libraries:
             return solution
 
@@ -429,5 +481,7 @@ class NewSolver:
             new_scanned,
             new_books
         )
+        
+        print(f"[tweak_solution_insert_library] Time: {time.time() - start:.4f}s")
         new_solution.calculate_fitness_score(data.scores)
         return new_solution
