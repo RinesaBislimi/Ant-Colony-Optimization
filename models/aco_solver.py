@@ -40,19 +40,27 @@ class ACO_Solver:
         self.pheromone = {lib.id: 1.0 for lib in data.libs}
 
     def select_guided_tweak(self, solution: Solution, data: InstanceData):
-        """Select an appropriate tweak method based on solution state"""
-        if solution.unsigned_libraries:
-            self.last_tweak_method_name = "insert_library"
-            return self.new_solver.tweak_solution_insert_library
-        
-        if len(solution.signed_libraries) >= 2:
-            method = random.choice(self._swap_methods)
-            self.last_tweak_method_name = method.__name__.split('.')[-1]
-            return method
-        
-        method = random.choice(self._book_tweak_methods)
-        self.last_tweak_method_name = method.__name__.split('.')[-1]
-        return method
+        """Try all tweak methods and pick the one with the best fitness score."""
+        tweaks = [
+            ("swap_signed", self.new_solver.tweak_solution_swap_signed),
+            ("swap_signed_with_unsigned", self.new_solver.tweak_solution_swap_signed_with_unsigned),
+            ("swap_same_books", self.new_solver.tweak_solution_swap_same_books),
+            ("swap_last_book", self.new_solver.tweak_solution_swap_last_book),
+            ("swap_neighbor_libraries", self.new_solver.tweak_solution_swap_neighbor_libraries),
+            ("insert_library", self.new_solver.tweak_solution_insert_library),
+        ]
+        best_score = float('-inf')
+        best_solution = None
+        best_name = None
+        for name, tweak in tweaks:
+            candidate = tweak(solution, data)
+            if candidate and hasattr(candidate, "fitness_score") and candidate.fitness_score > best_score:
+                best_score = candidate.fitness_score
+                best_solution = candidate
+                best_name = name
+        self.last_tweak_method_name = best_name
+        # Return a function that, when called, returns the best solution
+        return lambda sol, dat: best_solution
 
     def heuristic_information(self, lib_id: int, data: InstanceData) -> float:
         """Calculate heuristic information for a library (score per signup day)"""
