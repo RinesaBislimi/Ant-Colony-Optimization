@@ -59,24 +59,27 @@ class Solution:
         self.fitness_score = updated_fitness
     def clean(self, data):
         """Ensure all scanned books are valid and within scan limits."""
+        lib_dict = {lib.id: lib for lib in data.libs}
         valid_books_per_lib = {lib.id: set(book.id for book in lib.books) for lib in data.libs}
         seen_books = set()
         for lib_id in self.signed_libraries:
-            library = data.libs[lib_id]
-            books = self.scanned_books_per_library.get(lib_id, [])
-            # Only keep books that belong to the library and are not already scanned
-            cleaned_books = []
-            for book_id in books:
-                if book_id in valid_books_per_lib[lib_id] and book_id not in seen_books:
-                    cleaned_books.append(book_id)
-                    seen_books.add(book_id)
-            # Enforce scan limit
-            signup_days = library.signup_days
-            idx = self.signed_libraries.index(lib_id)
-            days_left = data.num_days - sum(data.libs[lid].signup_days for lid in self.signed_libraries[:idx+1])
-            max_books = max(0, days_left) * library.books_per_day
-            cleaned_books = cleaned_books[:max_books]
-            self.scanned_books_per_library[lib_id] = cleaned_books
+            if lib_id not in lib_dict:
+                continue
+        library = lib_dict[lib_id]
+        books = self.scanned_books_per_library.get(lib_id, [])
+        # Only keep books that belong to the library and are not already scanned
+        cleaned_books = []
+        for book_id in books:
+            if book_id in valid_books_per_lib[lib_id] and book_id not in seen_books:
+                cleaned_books.append(book_id)
+                seen_books.add(book_id)
+        # Enforce scan limit
+        signup_days = library.signup_days
+        idx = self.signed_libraries.index(lib_id)
+        days_left = data.num_days - sum(lib_dict[lid].signup_days for lid in self.signed_libraries[:idx+1] if lid in lib_dict)
+        max_books = max(0, days_left) * library.books_per_day
+        cleaned_books = cleaned_books[:max_books]
+        self.scanned_books_per_library[lib_id] = cleaned_books
         # Update the global scanned_books set
         self.scanned_books = set()
         for books in self.scanned_books_per_library.values():

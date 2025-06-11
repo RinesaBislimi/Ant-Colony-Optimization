@@ -6,8 +6,8 @@ from models.solution import Solution
 from models.new_solver import NewSolver
 
 class ACO_Solver:
-    def __init__(self, num_ants: int = 10, evaporation_rate: float = 0.1, 
-                 alpha: float = 1.0, beta: float = 2.0, max_iterations: int = 100):
+    def __init__(self, num_ants: int = 2, evaporation_rate: float = 0.1, 
+                 alpha: float = 1.0, beta: float = 2.0, max_iterations: int = 10):
         self.num_ants = num_ants
         self.evaporation_rate = evaporation_rate
         self.alpha = alpha
@@ -82,52 +82,43 @@ class ACO_Solver:
         solution = Solution([], [], {}, set())
         curr_time = 0
         visited = set()
-        unvisited_libs = [lib.id for lib in data.libs]
+        lib_dict = {lib.id: lib for lib in data.libs}
+        unvisited_libs = set(lib_dict.keys())
 
         while curr_time < data.num_days and unvisited_libs:
             # Calculate probabilities for unvisited libraries
             probabilities = []
             valid_libs = []
-            
+
             for lib_id in unvisited_libs:
                 prob = self.calculate_probability(lib_id, data, visited)
                 if prob > 0:
                     probabilities.append(prob)
                     valid_libs.append(lib_id)
-            
+
             if not valid_libs:
                 break
-                
+
             # Select library based on probability
             if sum(probabilities) == 0:
                 selected_id = random.choice(valid_libs)
             else:
                 selected_id = random.choices(valid_libs, weights=probabilities, k=1)[0]
-            
+
             visited.add(selected_id)
             unvisited_libs.remove(selected_id)
-            
-            try:
-                library = next(lib for lib in data.libs if lib.id == selected_id)
-            except StopIteration:
-                solution.unsigned_libraries.append(selected_id)
-                continue
-            
+
+            library = lib_dict[selected_id]
+
             if curr_time + library.signup_days >= data.num_days:
                 solution.unsigned_libraries.append(selected_id)
                 continue
-                
+
             # Calculate available books
             time_left = data.num_days - (curr_time + library.signup_days)
             max_books = time_left * library.books_per_day
-            available_books = []
-            
-            for book in library.books:
-                if book.id not in solution.scanned_books:
-                    available_books.append(book.id)
-                    if len(available_books) >= max_books:
-                        break
-            
+            available_books = [book.id for book in library.books if book.id not in solution.scanned_books][:max_books]
+
             if available_books:
                 solution.signed_libraries.append(selected_id)
                 solution.scanned_books_per_library[selected_id] = available_books
@@ -135,29 +126,10 @@ class ACO_Solver:
                 curr_time += library.signup_days
             else:
                 solution.unsigned_libraries.append(selected_id)
-        
+
         solution.calculate_fitness_score(data.scores)
         return solution
-
-    def update_pheromones(self, solutions: List[Solution], data: InstanceData):
-        """Update pheromone trails based on ant solutions"""
-        total_score = sum(data.scores)
-        if total_score == 0:
-            return
-            
-        # Evaporate pheromones
-        for lib_id in list(self.pheromone.keys()):  # Create a copy of keys to avoid modification during iteration
-            self.pheromone[lib_id] *= (1 - self.evaporation_rate)
-        
-        # Add pheromones from solutions
-        for solution in solutions:
-            delta = solution.fitness_score / total_score
-            for lib_id in solution.signed_libraries:
-                if lib_id in self.pheromone:
-                    self.pheromone[lib_id] += delta
-                else:
-                    self.pheromone[lib_id] = delta  # Initialize if not present
-
+                
     def run(self, data: InstanceData) -> Solution:
         """Run the ACO algorithm to find the best solution"""
         self.initialize_pheromones(data)
@@ -185,3 +157,25 @@ class ACO_Solver:
             self.update_pheromones(solutions, data)
         
         return self.best_solution
+    def update_pheromones(self, solutions, data):
+        """Update pheromone trails based on the solutions found by the ants."""
+        # Evaporate pheromones
+        for lib_id in self.pheromone:
+            self.pheromone[lib_id] *= (1 - self.evaporation_rate)
+            # Prevent pheromone from dropping too low
+            if self.pheromone[lib_id] < 1e-6:
+                self.pheromone[lib_id] = 1e-6
+
+        # Reinforce pheromones based on solution quality
+        # Optionally, only reinforce the top N solutions for more exploitation
+        top_solutions = sorted(solutions, key=lambda s: s.fitness_score, reverse=True)[:max(1, len(solutions)//3)]
+        for solution in top_solutions:
+            for lib_id in solution.signed_libraries:
+                # The reinforcement can be proportional to the solution's fitness
+                self.pheromone[lib_id] += solution.fitness_score / (1 + len(solution.signed_libraries))
+
+        # Optionally normalize pheromones to avoid overflow
+        max_pheromone = max(self.pheromone.values())
+        if max_pheromone > 1e6:
+            for lib_id in self.pheromone:
+                self.pheromone[lib_id] /= max_pheromone
