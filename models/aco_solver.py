@@ -62,35 +62,30 @@ class ACO_Solver:
         # Return a function that, when called, returns the best solution
         return lambda sol, dat: best_solution
 
-    def heuristic_information(self, lib_id: int, data: InstanceData) -> float:
+    def heuristic_information(self, lib_id: int, data: InstanceData, lib_dict: dict) -> float:
         """Calculate heuristic information for a library (score per signup day)"""
-        try:
-            lib = next(lib for lib in data.libs if lib.id == lib_id)
-        except StopIteration:
+        lib = lib_dict.get(lib_id)
+        if lib is None or lib.signup_days == 0:
             return 0.0
-        
-        if lib.signup_days == 0:
-            return 0.0
-        
+
         # Calculate total score of books in the library
         total_score = sum(data.scores[book.id] for book in lib.books)
         return total_score / lib.signup_days
 
-    def calculate_probability(self, lib_id: int, data: InstanceData, visited: Set[int]) -> float:
+    def calculate_probability(self, lib_id: int, data: InstanceData, visited: Set[int], lib_dict: dict) -> float:
         """Calculate selection probability for a library"""
         if lib_id in visited:
             return 0.0
             
         tau = self.pheromone.get(lib_id, 1.0) ** self.alpha
-        eta = self.heuristic_information(lib_id, data) ** self.beta
+        eta = self.heuristic_information(lib_id, data, lib_dict) ** self.beta
         return tau * eta
 
-    def construct_solution(self, data: InstanceData) -> Solution:
+    def construct_solution(self, data: InstanceData, lib_dict: dict) -> Solution:
         """Construct a solution using pheromone trails and heuristic information"""
         solution = Solution([], [], {}, set())
         curr_time = 0
         visited = set()
-        lib_dict = {lib.id: lib for lib in data.libs}
         unvisited_libs = set(lib_dict.keys())
 
         while curr_time < data.num_days and unvisited_libs:
@@ -99,7 +94,7 @@ class ACO_Solver:
             valid_libs = []
 
             for lib_id in unvisited_libs:
-                prob = self.calculate_probability(lib_id, data, visited)
+                prob = self.calculate_probability(lib_id, data, visited, lib_dict)
                 if prob > 0:
                     probabilities.append(prob)
                     valid_libs.append(lib_id)
@@ -139,15 +134,15 @@ class ACO_Solver:
         return solution
                 
     def run(self, data: InstanceData) -> Solution:
+        lib_dict = {lib.id: lib for lib in data.libs}
         """Run the ACO algorithm to find the best solution"""
         self.initialize_pheromones(data)
-        
         for iteration in range(self.max_iterations):
             solutions = []
             
             for _ in range(self.num_ants):
                 # Construct and tweak solution
-                solution = self.construct_solution(data)
+                solution = self.construct_solution(data, lib_dict)
                 tweak_method = self.select_guided_tweak(solution, data)
                 tweaked_solution = tweak_method(solution, data)
                 
@@ -165,6 +160,7 @@ class ACO_Solver:
             self.update_pheromones(solutions, data)
         
         return self.best_solution
+
     def update_pheromones(self, solutions, data):
         """Update pheromone trails based on the solutions found by the ants."""
         # Evaporate pheromones
